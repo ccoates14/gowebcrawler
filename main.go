@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"strings"
+	"sync"
 )
 
 var queue = &Queue{}
@@ -15,6 +16,14 @@ var targetTerm *string
 var startUrl *string
 var targetTermLower string
 var pagesSeen = 0
+
+var threadCount = 1
+
+const MAX_THREADS = 50
+
+var foundTarget = false
+var seenUrls sync.Map
+var wg sync.WaitGroup
 
 type WebPageInfo struct {
 	text              string
@@ -29,6 +38,7 @@ func main() {
 
 	flag.Parse()
 
+	targetTermLower = strings.ToLower(*targetTerm)
 	fmt.Println("Start url: " + *startUrl)
 	fmt.Println("Target term: " + targetTermLower)
 
@@ -36,8 +46,6 @@ func main() {
 		fmt.Println("Invalid args passed")
 		os.Exit(1)
 	}
-
-	targetTermLower = strings.ToLower(*targetTerm)
 
 	if targetTermLower == "" {
 		os.Exit(1)
@@ -50,32 +58,48 @@ func main() {
 
 func crawl() {
 
-	for !queue.IsEmpty() {
-		//pop url off queue
-		url := queue.Dequeue()
-		pagesSeen++
+	var crawlThread = func() {
+		for !queue.IsEmpty() && !foundTarget {
+			//pop url off queue
+			url := queue.Dequeue()
+			pagesSeen++
 
-		fmt.Println("Searching page: " + url)
-		fmt.Println(pagesSeen)
+			fmt.Println("Searching page: " + url)
+			fmt.Println(pagesSeen)
 
-		pageInfo := getWebpageInfo(url)
+			pageInfo := getWebpageInfo(url)
 
-		if pageInfo.pageError != nil {
-			fmt.Println(pageInfo.pageError)
-		} else {
-			if strings.Contains(pageInfo.text, targetTermLower) {
-				fmt.Println("Found search term on url: " + url)
-				fmt.Printf("Pages Seen: %d\n", pagesSeen)
-
-				break
+			if pageInfo.pageError != nil {
+				fmt.Println(pageInfo.pageError)
 			} else {
+				if strings.Contains(pageInfo.text, targetTermLower) {
+					fmt.Println("Found search term on url: " + url)
+					fmt.Printf("Pages Seen: %d\n", pagesSeen)
+					foundTarget = true
+				} else {
 
-				for i := 0; i < len(pageInfo.linksToOtherPages); i++ {
-					queue.Enqueue(pageInfo.linksToOtherPages[i])
+					for i := 0; i < len(pageInfo.linksToOtherPages); i++ {
+						_, ok := seenUrls.Load(pageInfo.linksToOtherPages[i])
+						if !ok {
+							queue.Enqueue(pageInfo.linksToOtherPages[i])
+							seenUrls.Store(pageInfo.linksToOtherPages[i], pageInfo.linksToOtherPages[i])
+						}
+
+					}
 				}
 			}
 		}
+
+		defer wg.Done()
 	}
+
+	for threadCount < MAX_THREADS {
+		wg.Add(1)
+		go crawlThread()
+		threadCount++
+	}
+
+	wg.Wait()
 }
 
 func getWebpageInfo(url string) WebPageInfo {
@@ -138,19 +162,11 @@ func getWebpageInfo(url string) WebPageInfo {
 
 	add first page to queue
 
-	create worker thread {
-			while queue not empty
+	create thread
 
-				current page = thread safe take url from queue
-
-				does current page contain search term?
-					print page url and end program
-				else
-					find all links on page and add them to the queue
-
-				if thread count < 100
-					spawn new worker thread
-
-	}
+	thread
+		search page and take from safe queue
+		if thread count < 50
+			create new thread
 
 */
